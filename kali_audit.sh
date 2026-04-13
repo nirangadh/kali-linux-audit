@@ -215,13 +215,47 @@ section_filesystem() {
         log "          ${f}"
     done
 
-    # Sensitive file permissions
+    # Sensitive file permissions — evaluate with PASS / WARN / FAIL
+    # Expected values:
+    #   /etc/shadow, /etc/gshadow : 640 or 000 (never world-readable)
+    #   /etc/passwd               : 644 (world-readable is correct and required)
+    #   /etc/sudoers              : 440 (owner/group read-only, no write)
+    local f perms octal world_bit
     for f in /etc/shadow /etc/gshadow /etc/passwd /etc/sudoers; do
-        if [[ -e "$f" ]]; then
-            local perms
-            perms=$(stat -c '%a' "$f" 2>/dev/null)
-            log " ${INFO} ${f} permissions: ${perms}"
-        fi
+        [[ -e "$f" ]] || continue
+        perms=$(stat -c '%a' "$f" 2>/dev/null)
+        octal=$(( 8#$perms ))          # convert octal string → decimal for bit-tests
+        world_bit=$(( octal & 7 ))     # last three bits = world rwx
+
+        case "$f" in
+            /etc/shadow|/etc/gshadow)
+                if (( world_bit & 4 )); then
+                    log " ${FAIL} ${f} is world-readable (permissions: ${RED}${perms}${RST}) — hashed passwords exposed"
+                elif [[ "$perms" == "640" || "$perms" == "600" || "$perms" == "000" ]]; then
+                    log " ${PASS} ${f} permissions OK (${perms})"
+                else
+                    log " ${WARN} ${f} permissions ${YEL}${perms}${RST} — expected 640 or 000"
+                fi
+                ;;
+            /etc/passwd)
+                if [[ "$perms" == "644" ]]; then
+                    log " ${PASS} ${f} permissions OK (${perms})"
+                elif (( world_bit & 2 )); then
+                    log " ${FAIL} ${f} is world-writable (permissions: ${RED}${perms}${RST})"
+                else
+                    log " ${WARN} ${f} permissions ${YEL}${perms}${RST} — expected 644"
+                fi
+                ;;
+            /etc/sudoers)
+                if [[ "$perms" == "440" || "$perms" == "400" ]]; then
+                    log " ${PASS} ${f} permissions OK (${perms})"
+                elif (( world_bit & 2 )); then
+                    log " ${FAIL} ${f} is world-writable (permissions: ${RED}${perms}${RST})"
+                else
+                    log " ${WARN} ${f} permissions ${YEL}${perms}${RST} — expected 440"
+                fi
+                ;;
+        esac
     done
     log ""
 }
