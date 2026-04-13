@@ -1,6 +1,9 @@
 # Audit output
 audit_reports/
 
+# Local AI tooling guidance
+CLAUDE.md
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
