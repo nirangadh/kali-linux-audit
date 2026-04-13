@@ -577,6 +577,42 @@ def audit_virtualisation(report: AuditReport):
 def audit_interesting_files(report: AuditReport):
     heading("Interesting Files Scan")
 
+    # /etc/shadow permissions
+    # /etc/shadow stores hashed passwords and must never be world-readable.
+    # Correct permissions are 640 (root:shadow) or 000 on some hardened
+    # installs.  If the world-read bit is set, any local user can obtain
+    # the hashes and attempt offline cracking.
+    shadow = pathlib.Path("/etc/shadow")
+    if shadow.exists():
+        try:
+            mode = shadow.stat().st_mode
+            perms_str = oct(mode)[-3:]
+            world_bits = mode & 0o007          # other rwx
+            group_read  = bool(mode & 0o040)   # group read bit
+
+            if world_bits & 0o4:               # world-readable
+                emit(report, Finding(
+                    "FILES", f"/etc/shadow is world-readable ({perms_str})", SEVERITY_FAIL,
+                    "Any local user can read password hashes and attempt offline cracking.",
+                    "chmod 640 /etc/shadow  (or 000 on hardened systems)",
+                ))
+            elif world_bits:                   # world-writable or world-executable
+                emit(report, Finding(
+                    "FILES", f"/etc/shadow has unexpected world bits ({perms_str})", SEVERITY_FAIL,
+                    f"Mode {perms_str} grants unexpected access to all users.",
+                    "chmod 640 /etc/shadow",
+                ))
+            elif group_read:
+                emit(report, Finding(
+                    "FILES", f"/etc/shadow permissions OK ({perms_str})", SEVERITY_PASS,
+                    "Group-readable — verify the group is 'shadow' (expected on Debian/Kali)."))
+            else:
+                emit(report, Finding(
+                    "FILES", f"/etc/shadow permissions OK ({perms_str})", SEVERITY_PASS, ""))
+        except PermissionError:
+            emit(report, Finding("FILES", "Cannot stat /etc/shadow", SEVERITY_INFO,
+                                  "Run as root for a complete permissions check."))
+
     # Private keys
     key_patterns = ["*.pem", "*.key", "id_rsa", "id_ecdsa", "id_ed25519"]
     found_keys = []
