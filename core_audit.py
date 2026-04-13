@@ -517,13 +517,25 @@ def audit_interesting_files():
                               f"chmod 600 {hist}"))
 
     # Core dumps enabled?
-    core_pattern = run("cat /proc/sys/kernel/core_pattern 2>/dev/null")
-    core_limit = run("ulimit -c 2>/dev/null")
-    if core_limit and core_limit != "0":
-        emit(Finding("FILES", f"Core dumps enabled (pattern: {core_pattern})", SEVERITY_WARN,
-                      "", "Disable with 'ulimit -c 0' or fs.suid_dumpable=0"))
+    # ulimit is a shell built-in; running it via subprocess reflects the
+    # child shell's inherited limits rather than the user's configured limit
+    # and is therefore unreliable.  Instead, read the kernel sysctl directly:
+    #   fs.suid_dumpable = 0  →  core dumps completely disabled
+    #   fs.suid_dumpable = 1  →  core dumps enabled (default)
+    #   fs.suid_dumpable = 2  →  core dumps enabled, root-readable only
+    core_pattern = pathlib.Path("/proc/sys/kernel/core_pattern").read_text().strip() \
+        if pathlib.Path("/proc/sys/kernel/core_pattern").exists() else "unknown"
+    suid_dumpable = run("sysctl -n fs.suid_dumpable 2>/dev/null")
+    if suid_dumpable == "0":
+        emit(Finding("FILES", "Core dumps disabled (fs.suid_dumpable=0)", SEVERITY_PASS, ""))
+    elif suid_dumpable == "2":
+        emit(Finding("FILES", f"Core dumps enabled for root (pattern: {core_pattern})",
+                      SEVERITY_INFO,
+                      "fs.suid_dumpable=2 limits dumps to root-readable files."))
     else:
-        emit(Finding("FILES", "Core dumps appear disabled", SEVERITY_PASS, ""))
+        emit(Finding("FILES", f"Core dumps enabled (pattern: {core_pattern})", SEVERITY_WARN,
+                      f"fs.suid_dumpable = {suid_dumpable or 'unknown'}",
+                      "Set fs.suid_dumpable=0 in /etc/sysctl.conf to disable."))
 
 
 # ── 9. Network Deep Dive (optional) ────────────────────────────────────────
