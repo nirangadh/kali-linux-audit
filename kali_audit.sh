@@ -368,6 +368,36 @@ section_network() {
     else
         log " ${PASS} IPv4 forwarding is disabled"
     fi
+
+    # UFW (Uncomplicated Firewall) status
+    # UFW is the recommended firewall front-end on Debian/Kali.  Checking
+    # only iptables/nftables rule counts (above) does not detect whether
+    # UFW is managing the rules or whether its default-deny policy is set.
+    if command -v ufw &>/dev/null; then
+        local ufw_status_line
+        ufw_status_line=$(ufw status 2>/dev/null | head -1 || true)
+
+        if [[ "$ufw_status_line" == *"active"* ]]; then
+            log " ${PASS} UFW is active"
+
+            # Verify the default inbound policy is deny or drop — an active
+            # UFW with default ALLOW is no better than no firewall at all.
+            local ufw_default_in
+            ufw_default_in=$(ufw status verbose 2>/dev/null \
+                | awk '/^Default:/{print $0}' || true)
+            if echo "$ufw_default_in" | grep -qiE 'deny|drop'; then
+                log " ${PASS} UFW default inbound policy is deny/drop"
+            else
+                log " ${WARN} UFW default inbound policy may not be deny/drop"
+                log "          Run 'ufw default deny incoming' to harden."
+            fi
+        else
+            log " ${WARN} UFW is installed but ${YEL}not active${RST}"
+            log "          Run 'ufw enable' and set 'ufw default deny incoming'."
+        fi
+    else
+        log " ${INFO} UFW not installed — firewall managed via iptables/nftables (see above)"
+    fi
     log ""
 }
 
