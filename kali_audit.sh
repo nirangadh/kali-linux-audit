@@ -162,7 +162,7 @@ section_users() {
     # Root login via SSH
     if [[ -f /etc/ssh/sshd_config ]]; then
         local root_login
-        root_login=$(grep -iE '^\s*PermitRootLogin' /etc/ssh/sshd_config 2>/dev/null | tail -1 | awk '{print $2}')
+        root_login=$(grep -iE '^\s*PermitRootLogin' /etc/ssh/sshd_config 2>/dev/null | tail -1 | awk '{print $2}' || true)
         if [[ "$root_login" == "yes" ]]; then
             log " ${FAIL} SSH PermitRootLogin is ${RED}yes${RST}"
         elif [[ "$root_login" == "prohibit-password" || "$root_login" == "without-password" ]]; then
@@ -179,7 +179,7 @@ section_users() {
     # Password-based SSH
     if [[ -f /etc/ssh/sshd_config ]]; then
         local pw_auth
-        pw_auth=$(grep -iE '^\s*PasswordAuthentication' /etc/ssh/sshd_config 2>/dev/null | tail -1 | awk '{print $2}')
+        pw_auth=$(grep -iE '^\s*PasswordAuthentication' /etc/ssh/sshd_config 2>/dev/null | tail -1 | awk '{print $2}' || true)
         if [[ "$pw_auth" == "yes" ]]; then
             log " ${WARN} SSH PasswordAuthentication is ${YEL}enabled${RST}"
         elif [[ "$pw_auth" == "no" ]]; then
@@ -218,7 +218,7 @@ section_users() {
 
     # Sudo group members
     local sudo_users
-    sudo_users=$(getent group sudo 2>/dev/null | cut -d: -f4)
+    sudo_users=$(getent group sudo 2>/dev/null | cut -d: -f4 || true)
     log " ${INFO} Sudo group members: ${sudo_users:-none}"
 
     # Sudoers NOPASSWD check

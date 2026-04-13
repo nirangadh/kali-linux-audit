@@ -1,3 +1,6 @@
+# Audit output
+audit_reports/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
