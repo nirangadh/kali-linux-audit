@@ -400,16 +400,33 @@ section_python_deep_audit() {
     log " ${INFO} Launching Python deep-audit engine..."
     log ""
 
-    # Run Python core; it writes JSON and outputs to stdout
+    # Run Python core; it writes JSON and streams output to stdout.
+    # Capture its exit code via PIPESTATUS[0] — the while loop's exit
+    # code is always 0 (reads to EOF), so we must inspect the left side
+    # of the pipe.  Without this check, a Python crash (ImportError,
+    # syntax error, permission problem) would be silently swallowed and
+    # the wrapper would report "JSON written" even though no JSON exists.
     python3 "${PYTHON_CORE}" \
         --json-out "${JSON_FILE}" \
         --skip-network "${SKIP_NETWORK}" \
         2>&1 | while IFS= read -r line; do
         log "  ${line}"
     done
+    local py_exit="${PIPESTATUS[0]}"
+
+    if [[ "$py_exit" -ne 0 ]]; then
+        log " ${FAIL} Python core engine exited with error (exit code: ${py_exit})"
+        log "         Check that all Python imports are available and re-run as root."
+        return 1
+    fi
 
     log ""
-    log " ${INFO} JSON report written to ${JSON_FILE}"
+    # Verify JSON was actually produced before advertising it
+    if [[ -f "${JSON_FILE}" ]]; then
+        log " ${INFO} JSON report written to ${JSON_FILE}"
+    else
+        log " ${WARN} Python core completed but JSON report was not created at ${JSON_FILE}"
+    fi
 }
 
 # ── Summary ─────────────────────────────────────────────────────────────────
