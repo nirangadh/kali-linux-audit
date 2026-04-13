@@ -57,14 +57,11 @@ class AuditReport:
     timestamp: str = ""
     kernel: str = ""
     findings: list = field(default_factory=list)
-    score: int = 100  # starts perfect, deductions applied
+    # NOTE: score is now a computed property (see below); the field is
+    # retained only for backwards-compat JSON serialisation.
 
     def add(self, f: Finding):
         self.findings.append(f)
-        if f.severity == SEVERITY_FAIL:
-            self.score = max(0, self.score - 5)
-        elif f.severity == SEVERITY_WARN:
-            self.score = max(0, self.score - 2)
 
     def to_dict(self):
         return {
@@ -81,8 +78,10 @@ class AuditReport:
             "findings": [asdict(f) for f in self.findings],
         }
 
-
-report = AuditReport()
+    @property
+    def score(self) -> int:
+        """Computed from findings; not a stored field (see commit history)."""
+        return _compute_score(self.findings)
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -116,8 +115,15 @@ def safe_int(value: str, default: int = 0) -> int:
         return default
 
 
-def emit(finding: Finding):
-    """Print a finding to stdout and record it."""
+def emit(report: AuditReport, finding: Finding):
+    """
+    Print a finding to stdout and record it in *report*.
+
+    Accepts the report as an explicit parameter rather than reading a
+    module-level global.  This makes each audit function self-contained,
+    testable, and safe to call multiple times without state leaking
+    between runs.
+    """
     icon = ICONS.get(finding.severity, "[?]")
     print(f"  {icon} [{finding.category}] {finding.title}")
     if finding.detail:
@@ -136,13 +142,13 @@ def heading(title: str):
 
 # ── 1. SSH Configuration Deep Dive ──────────────────────────────────────────
 
-def audit_ssh():
+def audit_ssh(report: AuditReport):
     heading("SSH Configuration Deep Dive")
     config_path = "/etc/ssh/sshd_config"
     config_dir = "/etc/ssh/sshd_config.d"
 
     if not os.path.isfile(config_path):
-        emit(Finding("SSH", "sshd_config not found", SEVERITY_INFO,
+        emit(report, Finding("SSH", "sshd_config not found", SEVERITY_INFO,
                       "OpenSSH server may not be installed."))
         return
 
@@ -168,7 +174,7 @@ def audit_ssh():
         with open(config_path) as f:
             main_lines = f.readlines()
     except PermissionError:
-        emit(Finding("SSH", "Cannot read sshd_config", SEVERITY_WARN,
+        emit(report, Finding("SSH", "Cannot read sshd_config", SEVERITY_WARN,
                       "Permission denied.", "Run as root."))
         return
 
@@ -200,31 +206,31 @@ def audit_ssh():
     for key, (expected, rec) in checks.items():
         val = cfg.get(key)
         if val is None:
-            emit(Finding("SSH", f"{key} not set", SEVERITY_INFO,
+            emit(report, Finding("SSH", f"{key} not set", SEVERITY_INFO,
                           "Using default.", rec))
         elif expected and val.lower() != expected:
-            emit(Finding("SSH", f"{key} = {val}", SEVERITY_WARN,
+            emit(report, Finding("SSH", f"{key} = {val}", SEVERITY_WARN,
                           f"Expected: {expected}", rec))
         elif expected:
-            emit(Finding("SSH", f"{key} = {val}", SEVERITY_PASS, ""))
+            emit(report, Finding("SSH", f"{key} = {val}", SEVERITY_PASS, ""))
 
     # Host key algorithms
     host_keys = list(pathlib.Path("/etc/ssh").glob("ssh_host_*_key.pub"))
     algos = [k.stem.replace("ssh_host_", "").replace("_key", "") for k in host_keys]
     if "dsa" in algos:
-        emit(Finding("SSH", "DSA host key present", SEVERITY_WARN,
+        emit(report, Finding("SSH", "DSA host key present", SEVERITY_WARN,
                       "DSA keys are deprecated and weak.",
                       "Remove /etc/ssh/ssh_host_dsa_key*"))
     if "ed25519" in algos:
-        emit(Finding("SSH", "Ed25519 host key present", SEVERITY_PASS, "Strong algorithm."))
+        emit(report, Finding("SSH", "Ed25519 host key present", SEVERITY_PASS, "Strong algorithm."))
     elif "rsa" in algos:
-        emit(Finding("SSH", "RSA host key present (no Ed25519)", SEVERITY_INFO,
+        emit(report, Finding("SSH", "RSA host key present (no Ed25519)", SEVERITY_INFO,
                       "Consider generating an Ed25519 key as well."))
 
 
 # ── 2. PAM & Password Policy ───────────────────────────────────────────────
 
-def audit_pam():
+def audit_pam(report: AuditReport):
     heading("PAM & Password Policy")
 
     # Password aging from login.defs
@@ -246,21 +252,21 @@ def audit_pam():
     # safe_int() avoids a ValueError crash if login.defs contains a
     # non-integer value (e.g. trailing comment or corrupted entry).
     if safe_int(max_days, default=99999) > 365:
-        emit(Finding("PAM", f"PASS_MAX_DAYS = {max_days}", SEVERITY_WARN,
+        emit(report, Finding("PAM", f"PASS_MAX_DAYS = {max_days}", SEVERITY_WARN,
                       "Passwords never/rarely expire.",
                       "Set PASS_MAX_DAYS to 90 in /etc/login.defs"))
     else:
-        emit(Finding("PAM", f"PASS_MAX_DAYS = {max_days}", SEVERITY_PASS, ""))
+        emit(report, Finding("PAM", f"PASS_MAX_DAYS = {max_days}", SEVERITY_PASS, ""))
 
     if safe_int(min_len, default=5) < 8:
-        emit(Finding("PAM", f"PASS_MIN_LEN = {min_len}", SEVERITY_WARN,
+        emit(report, Finding("PAM", f"PASS_MIN_LEN = {min_len}", SEVERITY_WARN,
                       "Minimum password length is low.",
                       "Set to 12+ in /etc/login.defs"))
 
     # pam_pwquality / pam_cracklib
     pwq_installed = os.path.isfile("/etc/security/pwquality.conf")
     if pwq_installed:
-        emit(Finding("PAM", "pam_pwquality installed", SEVERITY_PASS,
+        emit(report, Finding("PAM", "pam_pwquality installed", SEVERITY_PASS,
                       "Password complexity enforcement is available."))
         # Parse pwquality.conf
         with open("/etc/security/pwquality.conf") as f:
@@ -269,29 +275,29 @@ def audit_pam():
                 if line.startswith("minlen"):
                     val = line.split("=")[-1].strip()
                     if safe_int(val, default=8) < 12:
-                        emit(Finding("PAM", f"pwquality minlen = {val}", SEVERITY_WARN,
+                        emit(report, Finding("PAM", f"pwquality minlen = {val}", SEVERITY_WARN,
                                       "", "Set minlen = 12 or higher."))
                     else:
-                        emit(Finding("PAM", f"pwquality minlen = {val}", SEVERITY_PASS, ""))
+                        emit(report, Finding("PAM", f"pwquality minlen = {val}", SEVERITY_PASS, ""))
     else:
-        emit(Finding("PAM", "pam_pwquality not found", SEVERITY_WARN,
+        emit(report, Finding("PAM", "pam_pwquality not found", SEVERITY_WARN,
                       "No password complexity enforcement.",
                       "apt install libpam-pwquality"))
 
     # pam_faillock / pam_tally2
     faillock = run("grep -r 'pam_faillock\\|pam_tally2' /etc/pam.d/ 2>/dev/null")
     if faillock:
-        emit(Finding("PAM", "Account lockout configured", SEVERITY_PASS,
+        emit(report, Finding("PAM", "Account lockout configured", SEVERITY_PASS,
                       "pam_faillock or pam_tally2 is active."))
     else:
-        emit(Finding("PAM", "No account lockout policy", SEVERITY_WARN,
+        emit(report, Finding("PAM", "No account lockout policy", SEVERITY_WARN,
                       "Brute-force attacks are not rate-limited by PAM.",
                       "Configure pam_faillock in /etc/pam.d/common-auth"))
 
 
 # ── 3. Cron & Scheduled Tasks ──────────────────────────────────────────────
 
-def audit_cron():
+def audit_cron(report: AuditReport):
     heading("Cron & Scheduled Tasks")
 
     cron_dirs = [
@@ -305,38 +311,38 @@ def audit_cron():
         if p.is_file():
             perms = oct(p.stat().st_mode)[-3:]
             if int(perms, 8) & 0o002:
-                emit(Finding("CRON", f"{path} is world-writable", SEVERITY_FAIL,
+                emit(report, Finding("CRON", f"{path} is world-writable", SEVERITY_FAIL,
                               f"Permissions: {perms}",
                               f"chmod o-w {path}"))
             else:
-                emit(Finding("CRON", f"{path} perms OK ({perms})", SEVERITY_PASS, ""))
+                emit(report, Finding("CRON", f"{path} perms OK ({perms})", SEVERITY_PASS, ""))
         elif p.is_dir():
             for child in p.iterdir():
                 if child.is_file():
                     cperms = oct(child.stat().st_mode)[-3:]
                     if int(cperms, 8) & 0o002:
-                        emit(Finding("CRON", f"{child} is world-writable", SEVERITY_FAIL,
+                        emit(report, Finding("CRON", f"{child} is world-writable", SEVERITY_FAIL,
                                       f"Permissions: {cperms}",
                                       f"chmod o-w {child}"))
 
     # Systemd timers
     timers = run("systemctl list-timers --all --no-pager 2>/dev/null")
     timer_count = len([l for l in timers.splitlines() if "timer" in l.lower()])
-    emit(Finding("CRON", f"{timer_count} systemd timer(s) found", SEVERITY_INFO, ""))
+    emit(report, Finding("CRON", f"{timer_count} systemd timer(s) found", SEVERITY_INFO, ""))
 
 
 # ── 4. Disk Encryption & Mount Options ─────────────────────────────────────
 
-def audit_disk():
+def audit_disk(report: AuditReport):
     heading("Disk Encryption & Mount Options")
 
     # LUKS volumes
     luks_devs = run("lsblk -o NAME,FSTYPE,TYPE 2>/dev/null | grep -i crypt")
     if luks_devs:
-        emit(Finding("DISK", "Encrypted volumes detected", SEVERITY_PASS,
+        emit(report, Finding("DISK", "Encrypted volumes detected", SEVERITY_PASS,
                       luks_devs))
     else:
-        emit(Finding("DISK", "No LUKS encryption detected", SEVERITY_WARN,
+        emit(report, Finding("DISK", "No LUKS encryption detected", SEVERITY_WARN,
                       "Disk is likely unencrypted.",
                       "Consider full-disk encryption for sensitive machines."))
 
@@ -355,32 +361,32 @@ def audit_disk():
     for mountpoint, expected_opts in risky.items():
         found = [l for l in mounts if f" {mountpoint} " in l]
         if not found:
-            emit(Finding("DISK", f"{mountpoint} not a separate mount", SEVERITY_INFO,
+            emit(report, Finding("DISK", f"{mountpoint} not a separate mount", SEVERITY_INFO,
                           "", f"Consider a separate partition for {mountpoint}."))
             continue
         opts = found[0].split()[3]
         missing = [o for o in expected_opts if o not in opts]
         if missing:
-            emit(Finding("DISK", f"{mountpoint} missing: {', '.join(missing)}", SEVERITY_WARN,
+            emit(report, Finding("DISK", f"{mountpoint} missing: {', '.join(missing)}", SEVERITY_WARN,
                           f"Current options: {opts}",
                           f"Add {', '.join(missing)} to /etc/fstab for {mountpoint}."))
         else:
-            emit(Finding("DISK", f"{mountpoint} mount options OK", SEVERITY_PASS, ""))
+            emit(report, Finding("DISK", f"{mountpoint} mount options OK", SEVERITY_PASS, ""))
 
 
 # ── 5. Logging & Auditd ────────────────────────────────────────────────────
 
-def audit_logging():
+def audit_logging(report: AuditReport):
     heading("Logging & Auditd")
 
     # rsyslog / syslog-ng
     for svc in ["rsyslog", "syslog-ng"]:
         status = run(f"systemctl is-active {svc} 2>/dev/null")
         if status == "active":
-            emit(Finding("LOG", f"{svc} is running", SEVERITY_PASS, ""))
+            emit(report, Finding("LOG", f"{svc} is running", SEVERITY_PASS, ""))
             break
     else:
-        emit(Finding("LOG", "No syslog daemon running", SEVERITY_WARN,
+        emit(report, Finding("LOG", "No syslog daemon running", SEVERITY_WARN,
                       "", "Enable rsyslog or syslog-ng."))
 
     # journald persistence
@@ -389,26 +395,26 @@ def audit_logging():
         with open(journal_conf) as f:
             content = f.read()
         if re.search(r"^\s*Storage\s*=\s*persistent", content, re.MULTILINE | re.IGNORECASE):
-            emit(Finding("LOG", "journald Storage=persistent", SEVERITY_PASS, ""))
+            emit(report, Finding("LOG", "journald Storage=persistent", SEVERITY_PASS, ""))
         else:
-            emit(Finding("LOG", "journald may use volatile storage", SEVERITY_WARN,
+            emit(report, Finding("LOG", "journald may use volatile storage", SEVERITY_WARN,
                           "", "Set Storage=persistent in journald.conf"))
 
     # auditd
     auditd_active = run("systemctl is-active auditd 2>/dev/null")
     if auditd_active == "active":
-        emit(Finding("LOG", "auditd is running", SEVERITY_PASS, ""))
+        emit(report, Finding("LOG", "auditd is running", SEVERITY_PASS, ""))
         rule_count = run("auditctl -l 2>/dev/null | wc -l")
-        emit(Finding("LOG", f"auditd rules loaded: {rule_count}", SEVERITY_INFO, ""))
+        emit(report, Finding("LOG", f"auditd rules loaded: {rule_count}", SEVERITY_INFO, ""))
     else:
-        emit(Finding("LOG", "auditd is NOT running", SEVERITY_WARN,
+        emit(report, Finding("LOG", "auditd is NOT running", SEVERITY_WARN,
                       "System call auditing is disabled.",
                       "apt install auditd && systemctl enable --now auditd"))
 
 
 # ── 6. Integrity & Rootkit Indicators ──────────────────────────────────────
 
-def audit_integrity():
+def audit_integrity(report: AuditReport):
     heading("Integrity & Rootkit Indicators (lightweight)")
 
     # /etc/ld.so.preload — often used by rootkits
@@ -416,12 +422,12 @@ def audit_integrity():
     if preload.exists():
         content = preload.read_text().strip()
         if content:
-            emit(Finding("INTEGRITY", "/etc/ld.so.preload has entries", SEVERITY_FAIL,
+            emit(report, Finding("INTEGRITY", "/etc/ld.so.preload has entries", SEVERITY_FAIL,
                           content, "Investigate — this is a common rootkit vector."))
         else:
-            emit(Finding("INTEGRITY", "/etc/ld.so.preload is empty", SEVERITY_PASS, ""))
+            emit(report, Finding("INTEGRITY", "/etc/ld.so.preload is empty", SEVERITY_PASS, ""))
     else:
-        emit(Finding("INTEGRITY", "/etc/ld.so.preload absent", SEVERITY_PASS, ""))
+        emit(report, Finding("INTEGRITY", "/etc/ld.so.preload absent", SEVERITY_PASS, ""))
 
     # Hidden files in /
     # pathlib.iterdir() never yields "." or ".." so the previous
@@ -433,24 +439,24 @@ def audit_integrity():
                        if p.name.startswith(".")]
     except PermissionError:
         hidden_root = []
-        emit(Finding("INTEGRITY", "Cannot iterate / (permission denied)", SEVERITY_INFO,
+        emit(report, Finding("INTEGRITY", "Cannot iterate / (permission denied)", SEVERITY_INFO,
                       "Run as root for a complete hidden-file scan."))
     if hidden_root:
-        emit(Finding("INTEGRITY", f"Hidden items in /: {len(hidden_root)}", SEVERITY_WARN,
+        emit(report, Finding("INTEGRITY", f"Hidden items in /: {len(hidden_root)}", SEVERITY_WARN,
                       "\n".join(hidden_root[:10]),
                       "Review — hidden files in / are unusual."))
     else:
-        emit(Finding("INTEGRITY", "No hidden files in /", SEVERITY_PASS, ""))
+        emit(report, Finding("INTEGRITY", "No hidden files in /", SEVERITY_PASS, ""))
 
     # Kernel modules — look for suspicious ones
     lsmod = run("lsmod 2>/dev/null")
     suspicious = ["diamorphine", "reptile", "lime", "khook", "bdvl"]
     flagged = [m for m in suspicious if m in lsmod.lower()]
     if flagged:
-        emit(Finding("INTEGRITY", f"Suspicious kernel modules: {', '.join(flagged)}",
+        emit(report, Finding("INTEGRITY", f"Suspicious kernel modules: {', '.join(flagged)}",
                       SEVERITY_FAIL, "", "Investigate immediately."))
     else:
-        emit(Finding("INTEGRITY", "No known-bad kernel modules detected", SEVERITY_PASS, ""))
+        emit(report, Finding("INTEGRITY", "No known-bad kernel modules detected", SEVERITY_PASS, ""))
 
     # /etc/hosts anomalies
     try:
@@ -458,42 +464,42 @@ def audit_integrity():
             hosts = f.readlines()
         non_comment = [l.strip() for l in hosts if l.strip() and not l.startswith("#")]
         if len(non_comment) > 10:
-            emit(Finding("INTEGRITY", f"/etc/hosts has {len(non_comment)} entries", SEVERITY_WARN,
+            emit(report, Finding("INTEGRITY", f"/etc/hosts has {len(non_comment)} entries", SEVERITY_WARN,
                           "Large hosts file may indicate DNS hijack.",
                           "Review /etc/hosts for unexpected entries."))
         else:
-            emit(Finding("INTEGRITY", f"/etc/hosts entries: {len(non_comment)}", SEVERITY_PASS, ""))
+            emit(report, Finding("INTEGRITY", f"/etc/hosts entries: {len(non_comment)}", SEVERITY_PASS, ""))
     except Exception:
         pass
 
     # Check AIDE / Tripwire presence
     for tool in ["aide", "tripwire"]:
         if shutil.which(tool):
-            emit(Finding("INTEGRITY", f"{tool} is installed", SEVERITY_PASS,
+            emit(report, Finding("INTEGRITY", f"{tool} is installed", SEVERITY_PASS,
                           "File integrity monitoring tool available."))
             break
     else:
-        emit(Finding("INTEGRITY", "No file integrity tool (AIDE/Tripwire)", SEVERITY_WARN,
+        emit(report, Finding("INTEGRITY", "No file integrity tool (AIDE/Tripwire)", SEVERITY_WARN,
                       "", "Install aide or tripwire for change detection."))
 
 
 # ── 7. Container & Virtualisation Detection ────────────────────────────────
 
-def audit_virtualisation():
+def audit_virtualisation(report: AuditReport):
     heading("Container / Virtualisation Detection")
 
     virt = run("systemd-detect-virt 2>/dev/null") or "none/bare-metal"
-    emit(Finding("VIRT", f"Virtualisation: {virt}", SEVERITY_INFO, ""))
+    emit(report, Finding("VIRT", f"Virtualisation: {virt}", SEVERITY_INFO, ""))
 
     if os.path.isfile("/.dockerenv"):
-        emit(Finding("VIRT", "Running inside Docker", SEVERITY_INFO, ""))
+        emit(report, Finding("VIRT", "Running inside Docker", SEVERITY_INFO, ""))
     if os.path.isfile("/run/.containerenv"):
-        emit(Finding("VIRT", "Running inside Podman container", SEVERITY_INFO, ""))
+        emit(report, Finding("VIRT", "Running inside Podman container", SEVERITY_INFO, ""))
 
 
 # ── 8. Interesting Files Scan ───────────────────────────────────────────────
 
-def audit_interesting_files():
+def audit_interesting_files(report: AuditReport):
     heading("Interesting Files Scan")
 
     # Private keys
@@ -509,11 +515,11 @@ def audit_interesting_files():
             ][:5]
 
     if found_keys:
-        emit(Finding("FILES", f"Private keys found: {len(found_keys)}", SEVERITY_WARN,
+        emit(report, Finding("FILES", f"Private keys found: {len(found_keys)}", SEVERITY_WARN,
                       "\n".join(found_keys[:15]),
                       "Ensure private keys have 600 perms and are needed."))
     else:
-        emit(Finding("FILES", "No stray private keys found", SEVERITY_PASS, ""))
+        emit(report, Finding("FILES", "No stray private keys found", SEVERITY_PASS, ""))
 
     # .bash_history readable
     for home in pathlib.Path("/home").iterdir():
@@ -521,7 +527,7 @@ def audit_interesting_files():
         if hist.exists():
             perms = oct(hist.stat().st_mode)[-3:]
             if int(perms, 8) & 0o044:
-                emit(Finding("FILES", f"{hist} is world/group-readable ({perms})",
+                emit(report, Finding("FILES", f"{hist} is world/group-readable ({perms})",
                               SEVERITY_WARN, "",
                               f"chmod 600 {hist}"))
 
@@ -536,54 +542,54 @@ def audit_interesting_files():
         if pathlib.Path("/proc/sys/kernel/core_pattern").exists() else "unknown"
     suid_dumpable = run("sysctl -n fs.suid_dumpable 2>/dev/null")
     if suid_dumpable == "0":
-        emit(Finding("FILES", "Core dumps disabled (fs.suid_dumpable=0)", SEVERITY_PASS, ""))
+        emit(report, Finding("FILES", "Core dumps disabled (fs.suid_dumpable=0)", SEVERITY_PASS, ""))
     elif suid_dumpable == "2":
-        emit(Finding("FILES", f"Core dumps enabled for root (pattern: {core_pattern})",
+        emit(report, Finding("FILES", f"Core dumps enabled for root (pattern: {core_pattern})",
                       SEVERITY_INFO,
                       "fs.suid_dumpable=2 limits dumps to root-readable files."))
     else:
-        emit(Finding("FILES", f"Core dumps enabled (pattern: {core_pattern})", SEVERITY_WARN,
+        emit(report, Finding("FILES", f"Core dumps enabled (pattern: {core_pattern})", SEVERITY_WARN,
                       f"fs.suid_dumpable = {suid_dumpable or 'unknown'}",
                       "Set fs.suid_dumpable=0 in /etc/sysctl.conf to disable."))
 
 
 # ── 9. Network Deep Dive (optional) ────────────────────────────────────────
 
-def audit_network_deep():
+def audit_network_deep(report: AuditReport):
     heading("Network Deep Dive")
 
     # ARP table size (anomaly indicator)
     arp_entries = run("ip neigh show 2>/dev/null").splitlines()
-    emit(Finding("NET", f"ARP table entries: {len(arp_entries)}", SEVERITY_INFO, ""))
+    emit(report, Finding("NET", f"ARP table entries: {len(arp_entries)}", SEVERITY_INFO, ""))
 
     # DNS config
     resolv = pathlib.Path("/etc/resolv.conf")
     if resolv.exists():
         nameservers = [l.strip() for l in resolv.read_text().splitlines()
                        if l.strip().startswith("nameserver")]
-        emit(Finding("NET", f"DNS nameservers: {len(nameservers)}", SEVERITY_INFO,
+        emit(report, Finding("NET", f"DNS nameservers: {len(nameservers)}", SEVERITY_INFO,
                       "\n".join(nameservers)))
 
     # Promiscuous mode
     promisc = run("ip link show 2>/dev/null | grep PROMISC")
     if promisc:
-        emit(Finding("NET", "Interface(s) in PROMISCUOUS mode", SEVERITY_WARN,
+        emit(report, Finding("NET", "Interface(s) in PROMISCUOUS mode", SEVERITY_WARN,
                       promisc, "May indicate packet sniffing — verify intent."))
     else:
-        emit(Finding("NET", "No interfaces in promiscuous mode", SEVERITY_PASS, ""))
+        emit(report, Finding("NET", "No interfaces in promiscuous mode", SEVERITY_PASS, ""))
 
     # IPv6 status
     ipv6_disable = run("sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null")
     if ipv6_disable == "1":
-        emit(Finding("NET", "IPv6 is disabled", SEVERITY_INFO, ""))
+        emit(report, Finding("NET", "IPv6 is disabled", SEVERITY_INFO, ""))
     else:
-        emit(Finding("NET", "IPv6 is enabled", SEVERITY_INFO,
+        emit(report, Finding("NET", "IPv6 is enabled", SEVERITY_INFO,
                       "Ensure IPv6 firewall rules are also configured."))
 
 
 # ── 10. Security Tool Inventory ─────────────────────────────────────────────
 
-def audit_tools():
+def audit_tools(report: AuditReport):
     heading("Security Tool Inventory")
 
     tools = {
@@ -603,39 +609,58 @@ def audit_tools():
     for cmd, (label, sev) in tools.items():
         if shutil.which(cmd):
             installed.append(label)
-            emit(Finding("TOOLS", f"{label} — installed", sev, ""))
+            emit(report, Finding("TOOLS", f"{label} — installed", sev, ""))
         else:
             missing.append(label)
 
     if missing:
-        emit(Finding("TOOLS", f"{len(missing)} security tool(s) not found", SEVERITY_INFO,
+        emit(report, Finding("TOOLS", f"{len(missing)} security tool(s) not found", SEVERITY_INFO,
                       ", ".join(missing),
                       "Consider installing for defense-in-depth."))
 
     # AppArmor / SELinux enforcement
     aa = run("apparmor_status 2>/dev/null | head -5")
     if "profiles are in enforce" in (aa or ""):
-        emit(Finding("TOOLS", "AppArmor has enforcing profiles", SEVERITY_PASS, ""))
+        emit(report, Finding("TOOLS", "AppArmor has enforcing profiles", SEVERITY_PASS, ""))
     elif shutil.which("apparmor_status"):
-        emit(Finding("TOOLS", "AppArmor installed but no enforcing profiles", SEVERITY_WARN,
+        emit(report, Finding("TOOLS", "AppArmor installed but no enforcing profiles", SEVERITY_WARN,
                       "", "Set profiles to enforce mode."))
 
     se = run("getenforce 2>/dev/null")
     if se and se.lower() == "enforcing":
-        emit(Finding("TOOLS", "SELinux is Enforcing", SEVERITY_PASS, ""))
+        emit(report, Finding("TOOLS", "SELinux is Enforcing", SEVERITY_PASS, ""))
     elif se and se.lower() == "permissive":
-        emit(Finding("TOOLS", "SELinux is Permissive (logging only)", SEVERITY_WARN,
+        emit(report, Finding("TOOLS", "SELinux is Permissive (logging only)", SEVERITY_WARN,
                       "", "Set to Enforcing for full protection."))
 
     # Fail2Ban jails
     if shutil.which("fail2ban-client"):
         jails = run("fail2ban-client status 2>/dev/null")
-        emit(Finding("TOOLS", "Fail2Ban status", SEVERITY_INFO, jails or "Could not query."))
+        emit(report, Finding("TOOLS", "Fail2Ban status", SEVERITY_INFO, jails or "Could not query."))
 
 
 # ════════════════════════════════════════════════════════════════════════════
 #  Score & Final Report
 # ════════════════════════════════════════════════════════════════════════════
+
+def _compute_score(findings: list) -> int:
+    """
+    Percentage-based score used by AuditReport.score (see commit history).
+    Defined here (before AuditReport is fully constructed) so the property
+    can call it without a forward-reference problem.
+    """
+    # Only PASS / WARN / FAIL findings are scored; INFO is informational only.
+    scored = [f for f in findings if f.severity in (SEVERITY_PASS, SEVERITY_WARN, SEVERITY_FAIL)]
+    if not scored:
+        return 100
+    points = sum(
+        1.0 if f.severity == SEVERITY_PASS else
+        0.5 if f.severity == SEVERITY_WARN else
+        0.0                                    # FAIL
+        for f in scored
+    )
+    return round(points / len(scored) * 100)
+
 
 def compute_grade(score: int) -> str:
     if score >= 90:
@@ -649,7 +674,8 @@ def compute_grade(score: int) -> str:
     return "F"
 
 
-def print_scorecard():
+def print_scorecard(report: AuditReport):
+    """Print the final scorecard to stdout."""
     s = report.to_dict()["summary"]
     grade = compute_grade(report.score)
     color = "\033[0;32m" if report.score >= 80 else (
@@ -675,27 +701,33 @@ def main():
                         help="1 to skip network checks")
     args = parser.parse_args()
 
+    # Instantiate report locally — no global state.
+    # Every audit module receives it as an explicit parameter so that:
+    #   1. The module is independently testable (pass a fresh AuditReport).
+    #   2. Calling main() multiple times (e.g. in tests) does not accumulate
+    #      findings from prior runs into a shared global object.
+    report = AuditReport()
     report.hostname = socket.gethostname()
     report.timestamp = datetime.datetime.now().isoformat()
     report.kernel = platform.release()
 
     # Run all audit modules
-    audit_ssh()
-    audit_pam()
-    audit_cron()
-    audit_disk()
-    audit_logging()
-    audit_integrity()
-    audit_virtualisation()
-    audit_interesting_files()
+    audit_ssh(report)
+    audit_pam(report)
+    audit_cron(report)
+    audit_disk(report)
+    audit_logging(report)
+    audit_integrity(report)
+    audit_virtualisation(report)
+    audit_interesting_files(report)
 
     if args.skip_network != "1":
-        audit_network_deep()
+        audit_network_deep(report)
 
-    audit_tools()
+    audit_tools(report)
 
     # Scorecard
-    print_scorecard()
+    print_scorecard(report)
 
     # Write JSON
     try:
