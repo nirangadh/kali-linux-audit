@@ -221,6 +221,20 @@ section_users() {
     sudo_users=$(getent group sudo 2>/dev/null | cut -d: -f4)
     log " ${INFO} Sudo group members: ${sudo_users:-none}"
 
+    # Sudoers NOPASSWD check
+    # NOPASSWD entries allow passwordless privilege escalation and should be
+    # intentional, documented, and scoped to specific commands only.
+    local nopasswd_entries
+    nopasswd_entries=$(grep -rE '^\s*[^#].*NOPASSWD' /etc/sudoers /etc/sudoers.d/ 2>/dev/null || true)
+    if [[ -n "$nopasswd_entries" ]]; then
+        log " ${WARN} NOPASSWD sudoers entries found — review for over-privilege:"
+        echo "$nopasswd_entries" | while IFS= read -r line; do
+            log "          ${YEL}${line}${RST}"
+        done
+    else
+        log " ${PASS} No NOPASSWD entries in sudoers"
+    fi
+
     # Login shells
     log " ${INFO} Users with login shells:"
     awk -F: '$7 !~ /(nologin|false|sync|halt|shutdown)/ {printf "          %-20s %s\n", $1, $7}' /etc/passwd | while read -r line; do

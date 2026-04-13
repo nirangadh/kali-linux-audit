@@ -685,6 +685,62 @@ def audit_tools(report: AuditReport):
         emit(report, Finding("TOOLS", "Fail2Ban status", SEVERITY_INFO, jails or "Could not query."))
 
 
+# ── 11. Sudoers & Privilege Escalation ──────────────────────────────────────
+
+def audit_sudoers(report: AuditReport):
+    """
+    Scan /etc/sudoers and /etc/sudoers.d/ for NOPASSWD entries.
+
+    A NOPASSWD rule allows a user to run one or more commands as root (or
+    another user) without supplying a password.  This is a common privilege
+    escalation vector: if the account or the allowed command is compromised
+    the attacker gains elevated access with no additional credential check.
+
+    Legitimate use cases exist (e.g. automated scripts, CI runners) but
+    every NOPASSWD entry should be intentional, documented, and scoped as
+    narrowly as possible.
+    """
+    heading("Sudoers & Privilege Escalation")
+
+    sudoers_files = [pathlib.Path("/etc/sudoers")]
+    sudoers_d = pathlib.Path("/etc/sudoers.d")
+    if sudoers_d.is_dir():
+        try:
+            sudoers_files += sorted(sudoers_d.iterdir())
+        except PermissionError:
+            emit(report, Finding("SUDOERS", "Cannot list /etc/sudoers.d", SEVERITY_WARN,
+                                  "Permission denied — run as root for a complete scan."))
+
+    nopasswd_entries: list[str] = []
+    for sf in sudoers_files:
+        if not sf.is_file():
+            continue
+        try:
+            with open(sf) as fh:
+                for lineno, line in enumerate(fh, 1):
+                    stripped = line.strip()
+                    # Skip comments and blank lines
+                    if not stripped or stripped.startswith("#"):
+                        continue
+                    if "NOPASSWD" in stripped.upper():
+                        nopasswd_entries.append(f"{sf}:{lineno}: {stripped}")
+        except PermissionError:
+            emit(report, Finding("SUDOERS", f"Cannot read {sf}", SEVERITY_WARN,
+                                  "Permission denied.", "Run as root."))
+
+    if nopasswd_entries:
+        emit(report, Finding(
+            "SUDOERS",
+            f"NOPASSWD sudo rules found: {len(nopasswd_entries)}",
+            SEVERITY_WARN,
+            "\n".join(nopasswd_entries),
+            "Review each NOPASSWD entry.  Scope to specific commands only; "
+            "never grant NOPASSWD ALL unless absolutely required.",
+        ))
+    else:
+        emit(report, Finding("SUDOERS", "No NOPASSWD sudo rules found", SEVERITY_PASS, ""))
+
+
 # ════════════════════════════════════════════════════════════════════════════
 #  Score & Final Report
 # ════════════════════════════════════════════════════════════════════════════
@@ -791,6 +847,7 @@ def main():
         audit_network_deep(report)
 
     audit_tools(report)
+    audit_sudoers(report)
 
     # Scorecard
     print_scorecard(report)
