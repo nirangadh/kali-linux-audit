@@ -236,7 +236,36 @@ def audit_ssh(report: AuditReport):
         if len(parts) == 2:
             cfg.setdefault(parts[0].lower(), parts[1])
 
-    # Checks
+    # PermitRootLogin — handle separately: "yes" is FAIL, "no" is PASS,
+    # "prohibit-password" / "without-password" (key-only) is WARN (better
+    # than yes, but direct root access is still possible with a key).
+    # The generic checks dict only supports a single expected value, so this
+    # needs explicit logic.
+    root_login_val = cfg.get("permitrootlogin", "").lower()
+    if not root_login_val:
+        emit(report, Finding(
+            "SSH", "PermitRootLogin not set", SEVERITY_WARN,
+            "Default is 'prohibit-password' on modern OpenSSH — direct root "
+            "login with a key is possible.",
+            "Set PermitRootLogin no in sshd_config to block all direct root login.",
+        ))
+    elif root_login_val == "yes":
+        emit(report, Finding(
+            "SSH", "PermitRootLogin = yes", SEVERITY_FAIL,
+            "Direct root login via password is permitted.",
+            "Set PermitRootLogin no.  Use sudo from a regular user account instead.",
+        ))
+    elif root_login_val in ("prohibit-password", "without-password"):
+        emit(report, Finding(
+            "SSH", f"PermitRootLogin = {root_login_val}", SEVERITY_WARN,
+            "Direct root login with an SSH key is permitted (password blocked).",
+            "Set PermitRootLogin no for maximum security.",
+        ))
+    elif root_login_val == "no":
+        emit(report, Finding("SSH", "PermitRootLogin = no", SEVERITY_PASS,
+                              "Direct root login is fully disabled."))
+
+    # General directive checks (single expected value each)
     checks = {
         "protocol": ("2", "Use SSH protocol 2 only."),
         "x11forwarding": ("no", "Disable X11 forwarding unless needed."),
