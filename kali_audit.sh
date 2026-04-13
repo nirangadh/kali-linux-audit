@@ -256,7 +256,7 @@ section_filesystem() {
         ! -path '/proc/*' ! -path '/sys/*' ! -path '/run/*' \
         2>/dev/null | head -20 | while read -r d; do
         log "          ${YEL}${d}${RST}"
-    done
+    done || true
 
     # SUID binaries
     log " ${INFO} SUID binaries (top 30):"
@@ -264,7 +264,7 @@ section_filesystem() {
         ! -path '/proc/*' ! -path '/sys/*' \
         2>/dev/null | head -30 | while read -r f; do
         log "          ${f}"
-    done
+    done || true
 
     # SGID binaries
     log " ${INFO} SGID binaries (top 20):"
@@ -272,7 +272,7 @@ section_filesystem() {
         ! -path '/proc/*' ! -path '/sys/*' \
         2>/dev/null | head -20 | while read -r f; do
         log "          ${f}"
-    done
+    done || true
 
     # Sensitive file permissions — evaluate with PASS / WARN / FAIL
     # Expected values:
@@ -412,14 +412,14 @@ section_services() {
     systemctl list-unit-files --type=service --state=enabled 2>/dev/null | \
         grep -v '^UNIT' | head -30 | while read -r line; do
         log "          ${line}"
-    done
+    done || true
 
     # Running services
     log " ${INFO} Currently running services:"
     systemctl list-units --type=service --state=running 2>/dev/null | \
         grep '\.service' | head -30 | while read -r line; do
         log "          ${line}"
-    done
+    done || true
 
     # Dangerous defaults
     for svc in telnet.socket rsh.socket rlogin.socket rexec.socket; do
