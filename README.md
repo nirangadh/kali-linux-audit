@@ -1,5 +1,7 @@
 # kali-linux-audit
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 A non-invasive, read-only security posture audit tool for Kali Linux. It performs a structured series of informational checks across system identity, authentication, filesystem permissions, network configuration, services, kernel hardening parameters, and package currency — producing both a human-readable log and a machine-readable JSON report with a quantified security score.
 
 > **No modifications are made to the system.** The tool is strictly observational.
@@ -108,3 +110,9 @@ score = (PASS × 1  +  WARN × 0.5) / total_scored × 100
 ```
 
 `AUDIT_VERSION` in `core_audit.py` follows semantic versioning: increment the major component for breaking JSON schema changes, the minor component for new or changed checks, and the patch component for bug-fix-only releases.
+
+---
+
+## License
+
+This project is released under the [MIT License](LICENSE).
