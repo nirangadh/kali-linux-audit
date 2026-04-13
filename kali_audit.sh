@@ -80,11 +80,23 @@ _on_error() {
 }
 trap '_on_error $LINENO' ERR
 
-# Tee helper: write to both log and (optionally) screen
+# Bash-level finding counters (exclude Python core output to avoid
+# double-counting — Python findings are pulled from the JSON report).
+BASH_WARNS=0
+BASH_FAILS=0
+
+# Tee helper: write to both log and (optionally) screen.
+# Also increments BASH_WARNS / BASH_FAILS so the summary() function can
+# combine them with the Python core's own JSON summary without counting
+# the same findings twice.
 log() {
     local msg="$1"
     echo -e "$msg" >> "${LOG_FILE}"
     [[ $QUIET -eq 0 ]] && echo -e "$msg"
+    # Detect severity markers in the message and update counters.
+    # Use || true so the increment never triggers set -e.
+    [[ "$msg" == *"⚠ WARN"* ]] && (( BASH_WARNS++ )) || true
+    [[ "$msg" == *"✘ FAIL"* ]] && (( BASH_FAILS++ )) || true
 }
 
 banner() {
@@ -487,10 +499,21 @@ summary() {
     log " ${INFO} JSON report: ${JSON_FILE}"
     log " ${INFO} Finished   : $(date)"
     log ""
-    local warns fails
-    warns=$(grep -c '⚠ WARN' "${LOG_FILE}" 2>/dev/null || true)
-    fails=$(grep -c '✘ FAIL' "${LOG_FILE}" 2>/dev/null || true)
-    log " Totals → ${WARN} ${warns} warning(s)   ${FAIL} ${fails} failure(s)"
+    # Combine bash-level counters with Python core summary from JSON.
+    # Previously the whole log file was grepped, which counted Python findings
+    # twice — once in the Python core's own scorecard and once here.
+    local py_warns=0 py_fails=0
+    if [[ -f "${JSON_FILE}" ]]; then
+        py_warns=$(python3 -c \
+            "import json,sys; d=json.load(open('${JSON_FILE}')); print(d.get('summary',{}).get('warn',0))" \
+            2>/dev/null || echo 0)
+        py_fails=$(python3 -c \
+            "import json,sys; d=json.load(open('${JSON_FILE}')); print(d.get('summary',{}).get('fail',0))" \
+            2>/dev/null || echo 0)
+    fi
+    local total_warns=$(( BASH_WARNS + py_warns ))
+    local total_fails=$(( BASH_FAILS + py_fails ))
+    log " Totals → ${WARN} ${total_warns} warning(s) [bash:${BASH_WARNS} python:${py_warns}]   ${FAIL} ${total_fails} failure(s) [bash:${BASH_FAILS} python:${py_fails}]"
     log ""
 }
 
