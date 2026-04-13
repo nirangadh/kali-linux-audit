@@ -65,6 +65,21 @@ LOG_FILE="${OUTPUT_DIR}/audit_${TIMESTAMP}.log"
 JSON_FILE="${OUTPUT_DIR}/audit_${TIMESTAMP}.json"
 touch "${LOG_FILE}"
 
+# ── ERR trap ────────────────────────────────────────────────────────────────
+# Fires on any unhandled non-zero exit (set -e).  Without this, a failed
+# command mid-audit exits silently and leaves the log file truncated with
+# no indication that the run was incomplete.
+_on_error() {
+    local exit_code=$?
+    local line_no=${1:-unknown}
+    # Write directly to log file — log() may not yet be defined at startup
+    echo -e "\n${RED}[✘ FAIL]${RST} Audit aborted unexpectedly at line ${line_no} (exit code: ${exit_code})" \
+        | tee -a "${LOG_FILE}" >&2
+    echo -e "         Output in ${LOG_FILE} may be INCOMPLETE." \
+        | tee -a "${LOG_FILE}" >&2
+}
+trap '_on_error $LINENO' ERR
+
 # Tee helper: write to both log and (optionally) screen
 log() {
     local msg="$1"
