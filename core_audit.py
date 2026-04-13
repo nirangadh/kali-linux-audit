@@ -7,6 +7,12 @@ Called by kali_audit.sh or standalone:
     sudo python3 core_audit.py --json-out report.json [--skip-network 0|1]
 """
 
+# Increment this whenever the audit logic changes in a way that could affect
+# comparisons between reports (new checks, changed severities, scoring tweaks).
+# Format: MAJOR.MINOR.PATCH  — MAJOR for breaking JSON schema changes,
+# MINOR for new checks/fields, PATCH for bug-fix-only releases.
+AUDIT_VERSION = "1.1.0"
+
 import argparse
 import datetime
 import grp
@@ -103,6 +109,9 @@ class AuditReport:
 
     def to_dict(self):
         return {
+            # version lets consumers detect schema/logic changes between runs
+            # and is required for meaningful diff-based report comparisons.
+            "version": AUDIT_VERSION,
             "hostname": self.hostname,
             "timestamp": self.timestamp,
             "kernel": self.kernel,
