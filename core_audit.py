@@ -34,12 +34,30 @@ SEVERITY_INFO = "INFO"
 SEVERITY_WARN = "WARN"
 SEVERITY_FAIL = "FAIL"
 
-ICONS = {
+# Color mode: disabled when --plain is passed, NO_COLOR env var is set, or
+# stdout is not a TTY (e.g. piped to a file or CI system).  When disabled,
+# log files and piped output contain clean text without ANSI escape codes.
+_USE_COLOR: bool = True  # overridden in main() based on args / env / TTY
+
+ICONS_COLOR = {
     SEVERITY_PASS: "\033[0;32m[✔ PASS]\033[0m",
     SEVERITY_INFO: "\033[0;36m[i INFO]\033[0m",
     SEVERITY_WARN: "\033[1;33m[⚠ WARN]\033[0m",
     SEVERITY_FAIL: "\033[0;31m[✘ FAIL]\033[0m",
 }
+ICONS_PLAIN = {
+    SEVERITY_PASS: "[PASS]",
+    SEVERITY_INFO: "[INFO]",
+    SEVERITY_WARN: "[WARN]",
+    SEVERITY_FAIL: "[FAIL]",
+}
+
+def _icons() -> dict:
+    """Return the active icon set based on the current color mode."""
+    return ICONS_COLOR if _USE_COLOR else ICONS_PLAIN
+
+def _bold(text: str) -> str:
+    return f"\033[1m{text}\033[0m" if _USE_COLOR else text
 
 
 @dataclass
@@ -123,8 +141,12 @@ def emit(report: AuditReport, finding: Finding):
     module-level global.  This makes each audit function self-contained,
     testable, and safe to call multiple times without state leaking
     between runs.
+
+    Output uses ANSI colour when _USE_COLOR is True (the default when
+    stdout is a TTY); pass --plain or set NO_COLOR=1 to get plain text
+    suitable for log files and CI pipelines.
     """
-    icon = ICONS.get(finding.severity, "[?]")
+    icon = _icons().get(finding.severity, "[?]")
     print(f"  {icon} [{finding.category}] {finding.title}")
     if finding.detail:
         for line in finding.detail.split("\n"):
@@ -133,7 +155,7 @@ def emit(report: AuditReport, finding: Finding):
 
 
 def heading(title: str):
-    print(f"\n  \033[1m── {title} ──\033[0m")
+    print(f"\n  {_bold(f'── {title} ──')}")
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -675,14 +697,18 @@ def compute_grade(score: int) -> str:
 
 
 def print_scorecard(report: AuditReport):
-    """Print the final scorecard to stdout."""
+    """Print the final scorecard to stdout, respecting the color mode."""
     s = report.to_dict()["summary"]
     grade = compute_grade(report.score)
-    color = "\033[0;32m" if report.score >= 80 else (
-            "\033[1;33m" if report.score >= 60 else "\033[0;31m")
+    if _USE_COLOR:
+        sc_color = "\033[0;32m" if report.score >= 80 else (
+                   "\033[1;33m" if report.score >= 60 else "\033[0;31m")
+        reset = "\033[0m"
+    else:
+        sc_color = reset = ""
     print(f"""
   ╔════════════════════════════════════════════════════╗
-  ║  SECURITY POSTURE SCORE: {color}{report.score:>3}/100  Grade: {grade}\033[0m          ║
+  ║  SECURITY POSTURE SCORE: {sc_color}{report.score:>3}/100  Grade: {grade}{reset}          ║
   ╠════════════════════════════════════════════════════╣
   ║  PASS: {s['pass']:<5}  INFO: {s['info']:<5}  WARN: {s['warn']:<5}  FAIL: {s['fail']:<5}║
   ╚════════════════════════════════════════════════════╝
@@ -699,7 +725,19 @@ def main():
                         help="Path for JSON output")
     parser.add_argument("--skip-network", default="0",
                         help="1 to skip network checks")
+    parser.add_argument("--plain", action="store_true",
+                        help="Disable ANSI colour output (also honoured via NO_COLOR=1 env var "
+                             "or when stdout is not a TTY)")
     args = parser.parse_args()
+
+    # Determine color mode: disabled by --plain flag, NO_COLOR env var,
+    # or when stdout is not connected to a terminal (e.g. piped to a file).
+    global _USE_COLOR
+    _USE_COLOR = (
+        not args.plain
+        and os.environ.get("NO_COLOR", "") == ""
+        and sys.stdout.isatty()
+    )
 
     # Instantiate report locally — no global state.
     # Every audit module receives it as an explicit parameter so that:

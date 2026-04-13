@@ -2,13 +2,27 @@
 # ============================================================================
 #  Kali Linux Security Posture Audit — Bash Wrapper
 #  NON-INVASIVE: read-only checks, no modifications, no exploitation.
-#  Usage:  sudo ./kali_audit.sh [--output-dir /path] [--quiet] [--skip-network]
+#  Usage:  sudo ./kali_audit.sh [--output-dir /path] [--quiet] [--skip-network] [--plain]
 # ============================================================================
 set -euo pipefail
 
+# ── Colour mode ─────────────────────────────────────────────────────────────
+# Colours are disabled when:
+#   --plain flag is passed
+#   NO_COLOR=1 environment variable is set  (https://no-color.org/)
+#   stdout is not a TTY (e.g. piped to a file or CI system)
+# When disabled, ANSI escape codes are stripped so log files are clean text.
+PLAIN=0
+[[ "${NO_COLOR:-}" == "1" ]] && PLAIN=1
+[[ ! -t 1 ]]                 && PLAIN=1   # stdout not a TTY
+
 # ── Colours & Symbols ───────────────────────────────────────────────────────
-RED='\033[0;31m'; GRN='\033[0;32m'; YEL='\033[1;33m'
-CYN='\033[0;36m'; BLD='\033[1m'; RST='\033[0m'
+if [[ $PLAIN -eq 0 ]]; then
+    RED='\033[0;31m'; GRN='\033[0;32m'; YEL='\033[1;33m'
+    CYN='\033[0;36m'; BLD='\033[1m'; RST='\033[0m'
+else
+    RED=''; GRN=''; YEL=''; CYN=''; BLD=''; RST=''
+fi
 PASS="${GRN}[✔ PASS]${RST}"
 WARN="${YEL}[⚠ WARN]${RST}"
 FAIL="${RED}[✘ FAIL]${RST}"
@@ -35,6 +49,7 @@ Options:
   --output-dir DIR   Directory for reports (default: ./audit_reports)
   --quiet            Suppress banner & progress to stdout (logs still written)
   --skip-network     Skip network / firewall / listening-port checks
+  --plain            Disable ANSI colour output (also: set NO_COLOR=1)
   -h, --help         Show this help
 
 Reports are written to:
@@ -49,6 +64,9 @@ while [[ $# -gt 0 ]]; do
         --output-dir)   OUTPUT_DIR="$2"; shift 2 ;;
         --quiet)        QUIET=1; shift ;;
         --skip-network) SKIP_NETWORK=1; shift ;;
+        --plain)        PLAIN=1; RED=''; GRN=''; YEL=''; CYN=''; BLD=''; RST=''
+                        PASS="[PASS]"; WARN="[WARN]"; FAIL="[FAIL]"; INFO="[INFO]"
+                        shift ;;
         -h|--help)      usage ;;
         *) echo "Unknown option: $1"; usage ;;
     esac
@@ -467,9 +485,14 @@ section_python_deep_audit() {
     # of the pipe.  Without this check, a Python crash (ImportError,
     # syntax error, permission problem) would be silently swallowed and
     # the wrapper would report "JSON written" even though no JSON exists.
+    # Pass --plain through so the Python core also suppresses ANSI codes.
+    local plain_flag=""
+    [[ $PLAIN -eq 1 ]] && plain_flag="--plain"
+
     python3 "${PYTHON_CORE}" \
         --json-out "${JSON_FILE}" \
         --skip-network "${SKIP_NETWORK}" \
+        ${plain_flag} \
         2>&1 | while IFS= read -r line; do
         log "  ${line}"
     done
