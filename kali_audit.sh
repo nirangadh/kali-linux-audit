@@ -156,10 +156,17 @@ section_users() {
     fi
 
     # Users with empty passwords
+    # In /etc/shadow the password field meanings are:
+    #   ""   — truly empty password (no authentication required — CRITICAL)
+    #   "!"  — account is locked (cannot log in with a password)
+    #   "!!" — password never set / account locked (common for service accounts)
+    #   "*"  — account disabled
+    # Only a genuinely empty field ("") is a security failure; "!" means locked
+    # and was incorrectly flagged as empty in the previous version.
     local empty_pw
-    empty_pw=$(awk -F: '($2 == "" || $2 == "!") {print $1}' /etc/shadow 2>/dev/null)
+    empty_pw=$(awk -F: '$2 == "" {print $1}' /etc/shadow 2>/dev/null)
     if [[ -n "$empty_pw" ]]; then
-        log " ${FAIL} Accounts with empty/no password: ${RED}${empty_pw//$'\n'/, }${RST}"
+        log " ${FAIL} Accounts with truly empty passwords: ${RED}${empty_pw//$'\n'/, }${RST}"
     else
         log " ${PASS} No accounts with empty passwords"
     fi
