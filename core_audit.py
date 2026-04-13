@@ -424,8 +424,17 @@ def audit_integrity():
         emit(Finding("INTEGRITY", "/etc/ld.so.preload absent", SEVERITY_PASS, ""))
 
     # Hidden files in /
-    hidden_root = [str(p) for p in pathlib.Path("/").iterdir()
-                   if p.name.startswith(".") and p.name not in (".", "..")]
+    # pathlib.iterdir() never yields "." or ".." so the previous
+    # `not in (".", "..")` guard was dead code and has been removed.
+    # Wrap the iteration in try/except because some hardened systems
+    # restrict read access to / for non-root users.
+    try:
+        hidden_root = [str(p) for p in pathlib.Path("/").iterdir()
+                       if p.name.startswith(".")]
+    except PermissionError:
+        hidden_root = []
+        emit(Finding("INTEGRITY", "Cannot iterate / (permission denied)", SEVERITY_INFO,
+                      "Run as root for a complete hidden-file scan."))
     if hidden_root:
         emit(Finding("INTEGRITY", f"Hidden items in /: {len(hidden_root)}", SEVERITY_WARN,
                       "\n".join(hidden_root[:10]),
