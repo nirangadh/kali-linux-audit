@@ -75,11 +75,31 @@ class AuditReport:
     timestamp: str = ""
     kernel: str = ""
     findings: list = field(default_factory=list)
-    # NOTE: score is now a computed property (see below); the field is
-    # retained only for backwards-compat JSON serialisation.
 
     def add(self, f: Finding):
         self.findings.append(f)
+
+    @property
+    def score(self) -> int:
+        """
+        Percentage-based security score computed from findings at read time.
+
+        Formula: (PASS×1 + WARN×0.5) / total_scored × 100
+        Only PASS, WARN, and FAIL findings are scored; INFO is informational
+        and does not affect the score.
+
+        This replaces the previous fixed-deduction approach (FAIL −5,
+        WARN −2 from 100) which had two problems:
+          1. Adding more audit checks with PASS results did not improve the
+             score — the denominator was always 100.
+          2. Running with fewer audit modules gave an artificially high score
+             because fewer deductions could be applied.
+
+        The new formula scales with the number of checks performed, so the
+        score reflects the proportion of passing checks regardless of how
+        many modules are run.
+        """
+        return _compute_score(self.findings)
 
     def to_dict(self):
         return {
@@ -95,11 +115,6 @@ class AuditReport:
             },
             "findings": [asdict(f) for f in self.findings],
         }
-
-    @property
-    def score(self) -> int:
-        """Computed from findings; not a stored field (see commit history)."""
-        return _compute_score(self.findings)
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -667,11 +682,15 @@ def audit_tools(report: AuditReport):
 
 def _compute_score(findings: list) -> int:
     """
-    Percentage-based score used by AuditReport.score (see commit history).
-    Defined here (before AuditReport is fully constructed) so the property
-    can call it without a forward-reference problem.
+    Backing implementation for AuditReport.score.
+
+    Extracted as a module-level function so it can be unit-tested directly
+    without constructing a full AuditReport object.
+
+    Formula:  round( (PASS×1.0 + WARN×0.5) / total_scored × 100 )
+    INFO findings do not affect the score.
+    Returns 100 when no scored findings exist (nothing checked yet).
     """
-    # Only PASS / WARN / FAIL findings are scored; INFO is informational only.
     scored = [f for f in findings if f.severity in (SEVERITY_PASS, SEVERITY_WARN, SEVERITY_FAIL)]
     if not scored:
         return 100
