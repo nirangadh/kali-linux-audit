@@ -146,23 +146,34 @@ def audit_ssh():
                       "OpenSSH server may not be installed."))
         return
 
-    # Aggregate all config lines (main + drop-in dir)
-    lines = []
+    # On Debian/Kali the main sshd_config starts with:
+    #   Include /etc/ssh/sshd_config.d/*.conf
+    # sshd honours the FIRST occurrence of each directive, so files in
+    # sshd_config.d/ that appear via that Include take precedence over the
+    # main config.  We must therefore read drop-in files BEFORE the main
+    # config so that cfg.setdefault() correctly keeps the highest-priority
+    # (drop-in) value.  Previously drop-in lines were appended after the
+    # main config, causing main-config values to silently win.
+    dropin_lines: list = []
+    if os.path.isdir(config_dir):
+        for p in sorted(pathlib.Path(config_dir).glob("*.conf")):
+            try:
+                with open(p) as f:
+                    dropin_lines += f.readlines()
+            except PermissionError:
+                pass
+
+    main_lines: list = []
     try:
         with open(config_path) as f:
-            lines += f.readlines()
+            main_lines = f.readlines()
     except PermissionError:
         emit(Finding("SSH", "Cannot read sshd_config", SEVERITY_WARN,
                       "Permission denied.", "Run as root."))
         return
 
-    if os.path.isdir(config_dir):
-        for p in sorted(pathlib.Path(config_dir).glob("*.conf")):
-            try:
-                with open(p) as f:
-                    lines += f.readlines()
-            except PermissionError:
-                pass
+    # Drop-in directives first so they take precedence via setdefault()
+    lines = dropin_lines + main_lines
 
     cfg = {}
     for raw in lines:
