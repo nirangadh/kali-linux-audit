@@ -100,6 +100,22 @@ def run(cmd: str, timeout: int = 30) -> str:
         return ""
 
 
+def safe_int(value: str, default: int = 0) -> int:
+    """
+    Parse an integer from a config string value.
+
+    login.defs and pwquality.conf values should always be integers, but
+    malformed files (e.g. trailing comments, stray characters) can cause
+    int() to raise ValueError and crash the entire audit run.  This helper
+    returns *default* instead, so auditing continues and the bad value is
+    surfaced to the caller for reporting.
+    """
+    try:
+        return int(str(value).strip())
+    except (ValueError, TypeError):
+        return default
+
+
 def emit(finding: Finding):
     """Print a finding to stdout and record it."""
     icon = ICONS.get(finding.severity, "[?]")
@@ -216,14 +232,16 @@ def audit_pam():
     min_len  = defs.get("PASS_MIN_LEN", "5")
     warn_age = defs.get("PASS_WARN_AGE", "7")
 
-    if int(max_days) > 365:
+    # safe_int() avoids a ValueError crash if login.defs contains a
+    # non-integer value (e.g. trailing comment or corrupted entry).
+    if safe_int(max_days, default=99999) > 365:
         emit(Finding("PAM", f"PASS_MAX_DAYS = {max_days}", SEVERITY_WARN,
                       "Passwords never/rarely expire.",
                       "Set PASS_MAX_DAYS to 90 in /etc/login.defs"))
     else:
         emit(Finding("PAM", f"PASS_MAX_DAYS = {max_days}", SEVERITY_PASS, ""))
 
-    if int(min_len) < 8:
+    if safe_int(min_len, default=5) < 8:
         emit(Finding("PAM", f"PASS_MIN_LEN = {min_len}", SEVERITY_WARN,
                       "Minimum password length is low.",
                       "Set to 12+ in /etc/login.defs"))
@@ -239,7 +257,7 @@ def audit_pam():
                 line = line.strip()
                 if line.startswith("minlen"):
                     val = line.split("=")[-1].strip()
-                    if int(val) < 12:
+                    if safe_int(val, default=8) < 12:
                         emit(Finding("PAM", f"pwquality minlen = {val}", SEVERITY_WARN,
                                       "", "Set minlen = 12 or higher."))
                     else:
